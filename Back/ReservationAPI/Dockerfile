@@ -28,7 +28,7 @@ WORKDIR /var/www
 COPY . .
 
 # Installer les dépendances PHP
-RUN composer install --no-interaction --optimize-autoloader --no-dev
+RUN composer install --no-interaction --optimize-autoloader
 
 # Donner les permissions au dossier storage et bootstrap/cache
 RUN chown -R www-data:www-data /var/www/storage /var/www/bootstrap/cache
@@ -36,4 +36,10 @@ RUN chown -R www-data:www-data /var/www/storage /var/www/bootstrap/cache
 # Exposer le port 9000 pour PHP-FPM
 EXPOSE 9000
 
-CMD ["php-fpm"]
+# Copier le script d'entrée
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+
+CMD ["php", "artisan", "serve", "--host=0.0.0.0", "--port=8000"]
