@@ -2,23 +2,118 @@
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import axios from 'axios'
+import Multiselect from 'vue-multiselect'
+import 'vue-multiselect/dist/vue-multiselect.css'
+import FullCalendar from '@fullcalendar/vue3'
+import dayGridPlugin from '@fullcalendar/daygrid'
+import interactionPlugin from '@fullcalendar/interaction'
+import timeGridPlugin from '@fullcalendar/timegrid'
+
 
 const router = useRouter()
 const user = JSON.parse(localStorage.getItem('user'))
-const userName = ref(user ? user.nom : '')
 const salles = ref([])
 const sallesTmp = ref([])
 const equipements = ref([])
+const reservations = ref([])
 const equipementsSelected = ref([])
 const idSalle = ref('')
 const nbPersonnes = ref('')
 const dateDebut = ref('')
 const dateFin = ref('')
 const response = ref('') 
+const selectionEnCours = ref(false) 
+
+const handleDateClick = (arg) => {
+    const calendarApi = arg.view.calendar
+    
+    //si on est en semaine, on passe en jour
+    if (calendarApi.view.type === 'dayGridWeek') {
+        selectionEnCours.value = false
+        calendarApi.changeView('timeGridDay', arg.dateStr)
+        return
+    }
+
+    // on supprime les selections en cours si on la refait
+    calendarApi.getEvents().forEach(event => {
+        if (event.title === 'Ma réservation') event.remove()
+    })
+
+    if (!selectionEnCours.value) {
+        //par défaut la durée est de 30 minutes
+        const start = new Date(arg.date)
+        const defaultEnd = new Date(start.getTime() + 30 * 60000)
+        
+        dateDebut.value = start.toISOString()
+        dateFin.value = defaultEnd.toISOString()
+        
+        calendarApi.addEvent({
+            title: 'Ma réservation',
+            start: dateDebut.value,
+            end: dateFin.value,
+            allDay: arg.allDay,
+            backgroundColor: '#4CAF50',
+            borderColor: '#4CAF50'
+        })
+        
+        selectionEnCours.value = true
+    } else {
+        //2ème clic : Définit une date de fin
+        const start = new Date(dateDebut.value)
+        const end = new Date(arg.date.getTime() + 30 * 60000) //bornes de clic inclusives
+
+        if (end <= start) {
+            dateDebut.value = ''
+            dateFin.value = ''
+            selectionEnCours.value = false
+            return
+        }
+
+        dateDebut.value = start.toISOString()
+        dateFin.value = end.toISOString()
+        
+        calendarApi.addEvent({
+            title: 'Ma réservation',
+            start: dateDebut.value,
+            end: dateFin.value,
+            backgroundColor: '#4CAF50',
+            borderColor: '#4CAF50'
+        })
+        
+        selectionEnCours.value = false
+    }
+}
+
+//Configs du calendrier
+const calendarOptions = ref({
+    plugins: [dayGridPlugin, interactionPlugin, timeGridPlugin],
+    initialView: 'dayGridWeek',
+    headerToolbar: {
+        left: 'prev,next',
+        center: 'title',
+        right: 'dayGridWeek'
+    },
+    editable: true,
+    selectable: true,
+    events: [],
+    locale: 'fr',
+    buttonText: {
+        week: "Semaine"
+    },
+    allDayText: "Journée",
+    validRange: {
+        start: new Date().toISOString() //dates passées non valides
+    },
+    hiddenDays: [ 0, 6 ], //on cache les week-end
+    dateClick: handleDateClick,
+})
+
 const logout = () => {
     localStorage.removeItem('user')
     router.push({ name: 'Login' })
 }
+
+
 
 onMounted(async () => {
     try {
@@ -27,6 +122,17 @@ onMounted(async () => {
         sallesTmp.value = responseSalle.data
         const responseEquipement = await axios.post('http://localhost:8000/api/getEquipements')
         equipements.value = responseEquipement.data
+        const responseReservation = await axios.post('http://localhost:8000/api/getReservations')
+        reservations.value = responseReservation.data
+        reservations.value.forEach(reservation => {
+            calendarOptions.value.events.push({
+                title: 'Réservation salle ' + reservation.idSalle,
+                start: reservation.dateDebut,
+                end: reservation.dateFin, 
+                backgroundColor: 'red',
+                borderColor: 'red'
+            })
+        })
     } catch (error) {
         let message = error.response?.data?.message || 'Une erreur est survenue, API Injoignable ?'
         alert('Erreur lors de la récupération des salles:', message)
@@ -35,6 +141,8 @@ onMounted(async () => {
 
 const handleValidation = async () => {
     try {
+        console.log(dateDebut.value)
+        console.log(dateFin.value)
         const res = await axios.post(`http://localhost:8000/api/addReservation`, {
             idUser: user.id,
             idSalle: idSalle.value,
@@ -58,19 +166,24 @@ const handleValidation = async () => {
 }
 
 const filter = () => {
+
+    if (nbPersonnes.value < 1) {
+        nbPersonnes.value = 1
+    }
     sallesTmp.value = salles.value
     let filteredSalles = salles.value.filter(salle => salle.capacite >= nbPersonnes.value)
     
     if (equipementsSelected.value.length > 0) {
         filteredSalles = filteredSalles.filter(salle => {
             return equipementsSelected.value.every(selectedId => 
-                salle.equipements.some(e => e.id === selectedId)
+                salle.equipements.some(equipement => equipement.id === selectedId.id)
             )
         })
-    }
-    
+    }   
     sallesTmp.value = filteredSalles
 }
+
+
 </script>
 
 <template>
@@ -84,22 +197,24 @@ const filter = () => {
             <p>Reserver une salle</p>
         </div>
         <label for="nbPersonnes">Nombre de personnes</label>
-        <input type="number" name="nbPersonnes" id="nbPersonnes" class="input" v-model="nbPersonnes" @change="filter">
+        <input type="number" name="nbPersonnes" id="nbPersonnes" class="input" min="1" v-model="nbPersonnes" @change="filter">
         <label>Equipements</label>
-        <div class="equipements" style="margin-top: 8px;">
-            <label v-for="equip in equipements" :key="equip.id">
-                {{ equip.nom }}
-                <input :key="equip.id" :value="equip.id" type="checkbox" v-model="equipementsSelected" @change="filter">
-            </label>
-        </div>
+        <multiselect
+            v-model="equipementsSelected"
+            :options="equipements"
+            :multiple="true"
+            label="nom"
+            track-by="id"
+            :close-on-select="false"
+            placeholder=""
+            @select="filter"
+            @remove="filter"
+        />
         <label for="salle">Salle</label>
         <select name="salle" id="salle" class="input" v-model="idSalle">
             <option v-for="salle in sallesTmp" :key="salle.id" :value="salle.id">{{ salle.nom }}</option>
         </select>
-        <label for="dateDebut">Date de debut</label>
-        <input type="datetime-local" name="dateDebut" id="dateDebut" class="input" v-model="dateDebut">
-        <label for="dateFin">Date de fin</label>
-        <input type="datetime-local" name="dateFin" id="dateFin"class="input" v-model="dateFin">
+        <FullCalendar :options="calendarOptions" class="calendrier"/>
         <div class="buttons">
             <button @click="handleValidation" class="btn">Reserver</button>
             <button @click="router.push({ name: 'Home' })" class="btns">Annuler</button>
@@ -191,5 +306,9 @@ const filter = () => {
         display: grid;
         grid-template-columns: repeat(3, 1fr);
         gap: 10px;
+    }
+    .calendrier{
+        max-height: 20em;
+        overflow-y: scroll;
     }
 </style>
